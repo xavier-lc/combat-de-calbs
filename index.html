@@ -70,8 +70,8 @@
 <body>
 <div id="wrap">
   <canvas id="game" width="900" height="562"></canvas>
-  <button class="pad" id="pad1">P1 — TIRA!</button>
-  <button class="pad" id="pad2">P2 — TIRA!</button>
+  <button class="pad" id="pad1">P1 — TIBA!</button>
+  <button class="pad" id="pad2">P2 — TIBA!</button>
 </div>
 
 <script>
@@ -396,7 +396,7 @@
     ctx.textAlign = 'center';
     ctx.font = 'bold 20px "Courier New", monospace';
     const blink = (Math.floor(S.titlePulse * 2) % 2 === 0);
-    if (blink) ctx.fillText('PRÉM ESPAI O TOCA — 1 JUGADOR (vs CPU)', W / 2, H * 0.92);
+    if (blink) ctx.fillText('PREM ESPAI O TOCA — 1 JUGADOR (vs CPU)', W / 2, H * 0.92);
     ctx.font = '14px "Courier New", monospace';
     ctx.fillText('V = 2 JUGADORS LOCALS  ·  P1: A   P2: L', W / 2, H * 0.97);
   }
@@ -744,9 +744,9 @@
     // controls hint
     ctx.font = '12px "Courier New", monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('A = TIRA', 40, H - 20);
+    ctx.fillText('A = TIBA', 40, H - 20);
     ctx.textAlign = 'right';
-    ctx.fillText(S.mode === 'cpu' ? 'CPU' : 'L = TIRA', W - 40, H - 20);
+    ctx.fillText(S.mode === 'cpu' ? 'CPU' : 'L = TIBA', W - 40, H - 20);
   }
 
   function drawAdhesionBar(x, y, w, h, val, color, label, rightAlign = false) {
@@ -853,7 +853,7 @@
       ctx.fillStyle = '#111';
       ctx.font = 'bold 16px "Courier New", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('PRÉM ESPAI / TOCA PER TORNAR AL TÍTOL', W / 2, H * 0.92);
+      ctx.fillText('PREM ESPAI / TOCA PER TORNAR AL TÍTOL', W / 2, H * 0.92);
     }
   }
 
