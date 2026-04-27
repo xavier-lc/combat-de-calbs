@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>53.º Torneig de Batalles de Calbs</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: #ece6d8;
+    font-family: 'Courier New', monospace;
+    color: #111;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(0,0,0,0.04) 0 2px, transparent 2px 8px),
+      radial-gradient(#0001 1px, transparent 1.5px);
+    background-size: 100% 100%, 6px 6px;
+  }
+  #wrap {
+    position: relative;
+    width: min(100vw, 900px);
+    aspect-ratio: 16 / 10;
+    max-height: 100vh;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #fbfaf3;
+    border: 3px solid #111;
+    box-shadow: 8px 8px 0 #111;
+  }
+  .pad {
+    position: absolute;
+    bottom: 8px;
+    width: 44%;
+    height: 22%;
+    border: 3px solid #111;
+    background: rgba(255,255,255,0.55);
+    font-family: inherit;
+    font-weight: bold;
+    font-size: clamp(14px, 3vw, 22px);
+    cursor: pointer;
+    box-shadow: 4px 4px 0 #111;
+    transition: transform 0.05s, box-shadow 0.05s;
+  }
+  .pad:active, .pad.down {
+    transform: translate(4px, 4px);
+    box-shadow: 0 0 0 #111;
+    background: #111;
+    color: #fbfaf3;
+  }
+  #pad1 { left: 3%; }
+  #pad2 { right: 3%; }
+  @media (hover: hover) and (pointer: fine) {
+    .pad { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="900" height="562"></canvas>
+  <button class="pad" id="pad1">P1 — TIRA!</button>
+  <button class="pad" id="pad2">P2 — TIRA!</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // ==== STATE ====
+  const S = {
+    scene: 'title',          // title, ready, fight, end
+    mode: 'cpu',             // cpu or pvp
+    countdown: 0,
+    winner: 0,               // 1 or 2
+    p1: makeFighter(1),
+    p2: makeFighter(2),
+    rope: 0.5,               // 0..1, 0.5 = neutral
+    shake: 0,
+    flashPloc: 0,
+    cpuPressTimer: 0,
+    cpuDifficulty: 0.5,      // 0..1 (presses/sec scaling)
+    timeInScene: 0,
+    titlePulse: 0,
+  };
+
+  function makeFighter(n) {
+    return {
+      n,
+      power: 0,         // current pull force
+      adhesion: 100,    // suction cup grip remaining
+      lean: 0,          // visual lean back
+      shake: 0,         // visual shake when pressing
+      sweat: 0,
+      popped: false,
+      pressFlash: 0,
+    };
+  }
+
+  // ==== INPUT ====
+  const keysHeld = new Set();
+
+  function handlePress(player) {
+    if (S.scene === 'fight') {
+      const f = player === 1 ? S.p1 : S.p2;
+      f.power = Math.min(100, f.power + 7 + Math.random() * 3);
+      f.shake = 4;
+      f.pressFlash = 1;
+      f.sweat = Math.min(1, f.sweat + 0.05);
+    }
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    const k = e.code;
+    keysHeld.add(k);
+
+    if (S.scene === 'title') {
+      if (k === 'Space' || k === 'Enter') { S.mode = 'cpu'; startReady(); e.preventDefault(); }
+      else if (k === 'KeyV') { S.mode = 'pvp'; startReady(); }
+      return;
+    }
+    if (S.scene === 'end') {
+      if (k === 'Space' || k === 'Enter') { goTitle(); e.preventDefault(); }
+      return;
+    }
+    if (S.scene === 'fight') {
+      if (k === 'KeyA' || k === 'KeyZ' || k === 'ArrowLeft') handlePress(1);
+      if (k === 'KeyL' || k === 'KeyM' || k === 'ArrowRight') handlePress(2);
+    }
+  });
+  document.addEventListener('keyup', (e) => keysHeld.delete(e.code));
+
+  // Touch / button pads
+  const pad1 = document.getElementById('pad1');
+  const pad2 = document.getElementById('pad2');
+  function bindPad(btn, n) {
+    const press = (ev) => {
+      ev.preventDefault();
+      btn.classList.add('down');
+      if (S.scene === 'title') { S.mode = (n === 1 ? 'cpu' : 'pvp'); startReady(); return; }
+      if (S.scene === 'end') { goTitle(); return; }
+      handlePress(n);
+    };
+    const release = () => btn.classList.remove('down');
+    btn.addEventListener('touchstart', press, { passive: false });
+    btn.addEventListener('touchend', release);
+    btn.addEventListener('mousedown', press);
+    btn.addEventListener('mouseup', release);
+    btn.addEventListener('mouseleave', release);
+  }
+  bindPad(pad1, 1);
+  bindPad(pad2, 2);
+
+  // Click on canvas (mode select / restart)
+  canvas.addEventListener('click', (ev) => {
+    if (S.scene === 'title') {
+      const rect = canvas.getBoundingClientRect();
+      const cy = (ev.clientY - rect.top) * (H / rect.height);
+      // any click starts vs CPU
+      S.mode = 'cpu';
+      startReady();
+    } else if (S.scene === 'end') {
+      goTitle();
+    }
+  });
+
+  // ==== SCENE TRANSITIONS ====
+  function startReady() {
+    S.scene = 'ready';
+    S.countdown = 3.0;
+    S.p1 = makeFighter(1);
+    S.p2 = makeFighter(2);
+    S.rope = 0.5;
+    S.timeInScene = 0;
+  }
+  function startFight() {
+    S.scene = 'fight';
+    S.timeInScene = 0;
+    S.cpuPressTimer = 0;
+  }
+  function goTitle() {
+    S.scene = 'title';
+    S.timeInScene = 0;
+    // Reset both fighters so the title doesn't carry over `popped` state from the previous round.
+    S.p1 = makeFighter(1);
+    S.p2 = makeFighter(2);
+    S.rope = 0.5;
+  }
+  function endGame(winner) {
+    S.scene = 'end';
+    S.winner = winner;
+    S.flashPloc = 1;
+    S.shake = 14;
+    S.timeInScene = 0;
+    if (winner === 1) S.p2.popped = true; else S.p1.popped = true;
+  }
+
+  // ==== UPDATE ====
+  let lastT = performance.now();
+  function loop(t) {
+    const dt = Math.min(0.04, (t - lastT) / 1000);
+    lastT = t;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function update(dt) {
+    S.timeInScene += dt;
+    S.titlePulse += dt;
+    S.shake *= 0.85;
+    S.flashPloc *= 0.92;
+
+    if (S.scene === 'ready') {
+      S.countdown -= dt;
+      if (S.countdown <= 0) startFight();
+    }
+
+    if (S.scene === 'fight') {
+      // CPU AI
+      if (S.mode === 'cpu') {
+        S.cpuPressTimer -= dt;
+        // cadence: ~6-9 presses/sec, slightly random; ramps with time
+        const baseRate = 6.5 + Math.min(2.5, S.timeInScene * 0.05);
+        if (S.cpuPressTimer <= 0) {
+          handlePress(2);
+          S.cpuPressTimer = 1 / baseRate * (0.7 + Math.random() * 0.6);
+        }
+      }
+
+      // Decay powers
+      [S.p1, S.p2].forEach(f => {
+        f.power *= Math.pow(0.55, dt * 2.2); // exponential decay
+        if (f.power < 0.2) f.power = 0;
+        f.shake *= 0.85;
+        f.pressFlash *= 0.85;
+        f.sweat = Math.max(0, f.sweat - dt * 0.15);
+        // Lean toward backwards based on power
+        const target = f.power / 100;
+        f.lean += (target - f.lean) * Math.min(1, dt * 10);
+      });
+
+      // Net force on each cup:
+      //   pulling on opponent stresses opponent's cup;
+      //   resisting (your own pull) reduces stress on your cup.
+      const p1ToP2 = Math.max(0, S.p1.power - S.p2.power * 0.55);
+      const p2ToP1 = Math.max(0, S.p2.power - S.p1.power * 0.55);
+
+      // Drain adhesion proportional to net pull
+      S.p2.adhesion -= p1ToP2 * dt * 0.42;
+      S.p1.adhesion -= p2ToP1 * dt * 0.42;
+      S.p1.adhesion = Math.max(0, S.p1.adhesion);
+      S.p2.adhesion = Math.max(0, S.p2.adhesion);
+
+      // Tiny self-recovery when no stress (cup re-seats)
+      if (p2ToP1 === 0) S.p1.adhesion = Math.min(100, S.p1.adhesion + dt * 1.2);
+      if (p1ToP2 === 0) S.p2.adhesion = Math.min(100, S.p2.adhesion + dt * 1.2);
+
+      // Rope center: where the tug pulls it (visual)
+      const tug = (S.p1.power - S.p2.power) / 200; // -0.5..0.5
+      const targetRope = 0.5 - tug;
+      S.rope += (targetRope - S.rope) * Math.min(1, dt * 6);
+
+      // Camera shake on big tugs
+      S.shake = Math.max(S.shake, (S.p1.power + S.p2.power) * 0.02);
+
+      // Win condition
+      if (S.p1.adhesion <= 0) endGame(2);
+      else if (S.p2.adhesion <= 0) endGame(1);
+    }
+  }
+
+  // ==== RENDER ====
+  function render() {
+    ctx.save();
+    // Halftone bg
+    paintBackground();
+
+    // Camera shake
+    const sx = (Math.random() - 0.5) * S.shake;
+    const sy = (Math.random() - 0.5) * S.shake;
+    ctx.translate(sx, sy);
+
+    if (S.scene === 'title') drawTitle();
+    else if (S.scene === 'ready') { drawArena(); drawCountdown(); }
+    else if (S.scene === 'fight') { drawArena(); drawHUD(); }
+    else if (S.scene === 'end')  { drawArena(); drawEnd(); }
+
+    ctx.restore();
+  }
+
+  function paintBackground() {
+    ctx.fillStyle = '#fbfaf3';
+    ctx.fillRect(0, 0, W, H);
+    // halftone dots
+    ctx.fillStyle = 'rgba(0,0,0,0.07)';
+    for (let y = 0; y < H; y += 8) {
+      for (let x = (y % 16 === 0) ? 0 : 4; x < W; x += 8) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // floor
+    ctx.fillStyle = '#e9e2cf';
+    ctx.fillRect(0, H * 0.78, W, H * 0.22);
+    // floor lines
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, H * 0.78);
+    ctx.lineTo(W, H * 0.78);
+    ctx.stroke();
+    // speed lines (in fight)
+    if (S.scene === 'fight') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 1.5;
+      const seed = Math.floor(performance.now() / 80);
+      for (let i = 0; i < 16; i++) {
+        const r = ((seed * 9301 + i * 49297) % 233280) / 233280;
+        const y = r * H * 0.7;
+        const x1 = (i % 2 === 0) ? 0 : W * 0.7;
+        const x2 = x1 + 80 + r * 80;
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(x2, y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ==== TITLE ====
+  function drawTitle() {
+    // Big title in comic sunburst
+    ctx.save();
+    ctx.translate(W / 2, H * 0.32);
+    // sunburst
+    ctx.fillStyle = '#fbfaf3';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 3;
+    const rays = 18;
+    ctx.beginPath();
+    for (let i = 0; i < rays * 2; i++) {
+      const a = (i / (rays * 2)) * Math.PI * 2;
+      const r = (i % 2 === 0) ? 280 : 220;
+      const x = Math.cos(a) * r;
+      const y = Math.sin(a) * r * 0.55;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Title text
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 28px "Courier New", monospace';
+    ctx.fillText('53.º', 0, -50);
+    ctx.font = 'bold 44px "Courier New", monospace';
+    const pulse = 1 + Math.sin(S.titlePulse * 4) * 0.02;
+    ctx.save();
+    ctx.scale(pulse, pulse);
+    ctx.fillText('TORNEIG DE BATALLES', 0, 0);
+    ctx.fillText('DE CALBS', 0, 50);
+    ctx.restore();
+    ctx.restore();
+
+    // Two mini fighters facing, with the string between their suction cups.
+    {
+      const p1x = W * 0.30, p2x = W * 0.70, fy = H * 0.66, sc = 0.4;
+      const c1 = getCupPos(p1x, fy, 0, -1, sc);
+      const c2 = getCupPos(p2x, fy, 0, +1, sc);
+      drawString(c1.x, c1.y, c2.x, c2.y, sc);
+      drawFighter(p1x, fy, S.p1, false, 'p1', sc);
+      drawFighter(p2x, fy, S.p2, true,  'p2', sc);
+    }
+
+    // Instructions
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 20px "Courier New", monospace';
+    const blink = (Math.floor(S.titlePulse * 2) % 2 === 0);
+    if (blink) ctx.fillText('PRÉM ESPAI O TOCA — 1 JUGADOR (vs CPU)', W / 2, H * 0.92);
+    ctx.font = '14px "Courier New", monospace';
+    ctx.fillText('V = 2 JUGADORS LOCALS  ·  P1: A   P2: L', W / 2, H * 0.97);
+  }
+
+  // ==== ARENA / FIGHTERS ====
+  function drawArena() {
+    const groundY = H * 0.78;
+    const p1x = W * 0.27;
+    const p2x = W * 0.73;
+    const cy = groundY - 10;
+    const scale = 1.0;
+
+    const cup1 = getCupPos(p1x, cy, S.p1.lean, -1, scale);
+    const cup2 = getCupPos(p2x, cy, S.p2.lean, +1, scale);
+
+    if (S.p1.popped || S.p2.popped) {
+      // After a cup pops, it whips away toward the winner with the string trailing.
+      const t = S.timeInScene;
+      const flying = S.p1.popped
+        ? { x: p1x + 20 + t * 90, y: cy - 172 - t * 110 - Math.sin(t * 5) * 8, rot:  t * 5 }
+        : { x: p2x - 20 - t * 90, y: cy - 172 - t * 110 - Math.sin(t * 5) * 8, rot: -t * 5 };
+      const anchor = S.p1.popped ? cup2 : cup1;
+      drawStringSlack(anchor.x, anchor.y, flying.x, flying.y, scale);
+      drawFighter(p1x, cy, S.p1, false, 'p1', scale);
+      drawFighter(p2x, cy, S.p2, true,  'p2', scale);
+      drawSuctionCupAt(flying.x, flying.y, flying.rot);
+    } else {
+      drawString(cup1.x, cup1.y, cup2.x, cup2.y, scale);
+      drawFighter(p1x, cy, S.p1, false, 'p1', scale);
+      drawFighter(p2x, cy, S.p2, true,  'p2', scale);
+    }
+
+    if (S.scene === 'end') drawPLOC();
+  }
+
+  // String connecting the two suction-cup tips. Endpoints in world coords.
+  function drawString(ax, ay, bx, by, scale) {
+    const tension = Math.min(1, (S.p1.power + S.p2.power) / 160);
+    const sag = (1 - tension) * 22 * scale;
+    const midX = (ax + bx) / 2;
+    const midY = (ay + by) / 2 + sag;
+
+    ctx.save();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.4 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(midX, midY, bx, by);
+    ctx.stroke();
+
+    if (tension > 0.4) {
+      ctx.strokeStyle = `rgba(0,0,0,${0.2 + tension * 0.3})`;
+      ctx.lineWidth = 1 * scale;
+      const j = (Math.random() - 0.5) * 4 * tension;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay + j);
+      ctx.quadraticCurveTo(midX, midY + j, bx, by + j);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawStringSlack(ax, ay, bx, by, scale) {
+    const sag = 36 * scale;
+    const midX = (ax + bx) / 2;
+    const midY = (ay + by) / 2 + sag;
+    ctx.save();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.4 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(midX, midY, bx, by);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Where the suction-cup tip ends up in world coords given a fighter's lean.
+  // side = -1 for the fighter on the left (leans away to the left), +1 for right.
+  function getCupPos(fx, fy, lean, side, scale) {
+    const tilt = lean * 0.28;
+    const dist = 172 * scale;
+    return {
+      x: fx + side * dist * Math.sin(tilt),
+      y: fy - dist * Math.cos(tilt)
+    };
+  }
+
+  function drawSuctionCupAt(x, y, rot) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot || 0);
+    drawSuctionCup(0, 0, { sweat: 0 });
+    ctx.restore();
+  }
+
+  // The sitting cross-armed cartoony fighter
+  function drawFighter(cx, cy, f, faceLeft, type, scale) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    // overall scale
+    ctx.scale(scale, scale);
+    // facing left -> mirror (so both face inward, P2 faces left)
+    if (faceLeft) ctx.scale(-1, 1);
+
+    // lean back: rotate slightly backward (+x tilts away from rope)
+    const lean = (f.lean) * 0.28;
+    // tiny shake from button mash
+    const shx = (Math.random() - 0.5) * f.shake * 0.4;
+    const shy = (Math.random() - 0.5) * f.shake * 0.4;
+    ctx.translate(shx, shy);
+    // Lean BACK (away from opponent) when pulling, so the body's weight tugs the string.
+    // After the optional mirror for P2, rotate(-lean) tilts the top outward in screen space for both fighters.
+    ctx.rotate(-lean);
+
+    // ---- crossed legs (oval) ----
+    inkFill('#dcd2b8');
+    ellipsePath(0, -10, 70, 22);
+    fillStroke();
+
+    // ---- shoes ----
+    inkFill('#222');
+    ellipsePath(-44, -8, 14, 9);
+    fillStroke();
+    ellipsePath(44, -8, 14, 9);
+    fillStroke();
+
+    // ---- torso (jacket) ----
+    const jacket = (type === 'p1') ? '#cfc6ad' : '#9b9277';
+    inkFill(jacket);
+    ctx.beginPath();
+    ctx.moveTo(-38, -22);
+    ctx.lineTo(-30, -90);
+    ctx.lineTo(30, -90);
+    ctx.lineTo(38, -22);
+    ctx.closePath();
+    fillStroke();
+
+    // collar V
+    ctx.beginPath();
+    ctx.moveTo(-12, -90);
+    ctx.lineTo(0, -72);
+    ctx.lineTo(12, -90);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // ---- arms crossed ----
+    inkFill(jacket);
+    roundRect(-40, -55, 80, 22, 6);
+    fillStroke();
+    // crossed line (X)
+    ctx.beginPath();
+    ctx.moveTo(-30, -55);
+    ctx.lineTo(30, -33);
+    ctx.moveTo(30, -55);
+    ctx.lineTo(-30, -33);
+    ctx.stroke();
+    // hands
+    inkFill('#f1d8b3');
+    ellipsePath(-32, -44, 8, 7); fillStroke();
+    ellipsePath(32, -44, 8, 7); fillStroke();
+
+    // belt
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-38, -28, 76, 6);
+    ctx.fillStyle = '#bba';
+    ctx.fillRect(-4, -28, 8, 6);
+
+    // ---- head ----
+    inkFill('#f1d8b3');
+    ctx.beginPath();
+    ctx.arc(0, -120, 38, 0, Math.PI * 2);
+    fillStroke();
+
+    // shading on cheek
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.beginPath();
+    ctx.arc(-15, -110, 9, 0, Math.PI * 2);
+    ctx.arc(15, -110, 9, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ---- face features ----
+    drawFace(type, f);
+
+    // ---- suction cup on head ----
+    if (!f.popped) drawSuctionCup(0, -158, f);
+
+    // sweat drops
+    if (f.sweat > 0.1) {
+      ctx.fillStyle = '#5db4ff';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(28, -140);
+      ctx.quadraticCurveTo(36, -135, 32, -128);
+      ctx.quadraticCurveTo(24, -132, 28, -140);
+      ctx.fill(); ctx.stroke();
+    }
+
+    // press flash (impact lines around head)
+    if (f.pressFlash > 0.2) {
+      ctx.strokeStyle = `rgba(0,0,0,${f.pressFlash})`;
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const r1 = 46, r2 = 56 + f.pressFlash * 8;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r1, -120 + Math.sin(a) * r1);
+        ctx.lineTo(Math.cos(a) * r2, -120 + Math.sin(a) * r2);
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  function drawFace(type, f) {
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.2;
+    ctx.fillStyle = '#111';
+
+    if (type === 'p1') {
+      // angry brows
+      ctx.beginPath();
+      ctx.moveTo(-22, -135);
+      ctx.lineTo(-6, -130);
+      ctx.moveTo(22, -135);
+      ctx.lineTo(6, -130);
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.lineWidth = 2.2;
+
+      // eyes
+      ctx.beginPath();
+      ctx.arc(-12, -122, 2.5, 0, Math.PI * 2);
+      ctx.arc(12, -122, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // big mustache
+      ctx.beginPath();
+      ctx.moveTo(-20, -108);
+      ctx.bezierCurveTo(-25, -100, -10, -102, 0, -106);
+      ctx.bezierCurveTo(10, -102, 25, -100, 20, -108);
+      ctx.bezierCurveTo(15, -114, 5, -113, 0, -110);
+      ctx.bezierCurveTo(-5, -113, -15, -114, -20, -108);
+      ctx.fill();
+
+      // frown
+      ctx.beginPath();
+      ctx.moveTo(-8, -94);
+      ctx.quadraticCurveTo(0, -98, 8, -94);
+      ctx.stroke();
+    } else {
+      // angrier brows
+      ctx.beginPath();
+      ctx.moveTo(-22, -132);
+      ctx.lineTo(-4, -138);
+      ctx.moveTo(22, -132);
+      ctx.lineTo(4, -138);
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.lineWidth = 2.2;
+
+      // eyes
+      ctx.beginPath();
+      ctx.arc(-11, -122, 2.5, 0, Math.PI * 2);
+      ctx.arc(11, -122, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // scar across cheek
+      ctx.beginPath();
+      ctx.moveTo(-20, -112);
+      ctx.lineTo(-10, -100);
+      ctx.moveTo(-18, -108);
+      ctx.lineTo(-14, -104);
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.lineWidth = 2.2;
+
+      // gritted teeth grimace
+      ctx.fillStyle = '#fff';
+      roundRect(-16, -104, 32, 10, 2);
+      ctx.fill();
+      ctx.strokeRect(-16, -104, 32, 10);
+      ctx.beginPath();
+      for (let x = -12; x <= 12; x += 6) {
+        ctx.moveTo(x, -104);
+        ctx.lineTo(x, -94);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#111';
+    }
+  }
+
+  function drawSuctionCup(cx, cy, f) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    // stem
+    ctx.fillStyle = '#922';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    roundRect(-4, -14, 8, 14, 2);
+    ctx.fill(); ctx.stroke();
+    // bell
+    ctx.fillStyle = '#c0392b';
+    ctx.beginPath();
+    ctx.moveTo(-22, 0);
+    ctx.quadraticCurveTo(0, -8, 22, 0);
+    ctx.quadraticCurveTo(18, 12, 0, 14);
+    ctx.quadraticCurveTo(-18, 12, -22, 0);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(-8, -1, 6, 2, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ==== HUD ====
+  function drawHUD() {
+    // top bars: each player's adhesion (suction grip)
+    drawAdhesionBar(40, 30, 320, 18, S.p1.adhesion, '#111', 'P1 — ADHERÈNCIA');
+    drawAdhesionBar(W - 40 - 320, 30, 320, 18, S.p2.adhesion, '#111', 'P2 — ADHERÈNCIA', true);
+
+    // rope tension central indicator
+    const cx = W / 2, cy = 30;
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.fillRect(cx - 80, cy + 4, 160, 12);
+    ctx.strokeRect(cx - 80, cy + 4, 160, 12);
+    // tug marker
+    const tug = (S.p1.power - S.p2.power) / 200; // -0.5..0.5
+    const markerX = cx + tug * 160;
+    ctx.fillStyle = '#c0392b';
+    ctx.fillRect(markerX - 4, cy, 8, 20);
+    ctx.strokeRect(markerX - 4, cy, 8, 20);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 11px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('TENSIÓ', cx, cy);
+
+    // controls hint
+    ctx.font = '12px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('A = TIRA', 40, H - 20);
+    ctx.textAlign = 'right';
+    ctx.fillText(S.mode === 'cpu' ? 'CPU' : 'L = TIRA', W - 40, H - 20);
+  }
+
+  function drawAdhesionBar(x, y, w, h, val, color, label, rightAlign = false) {
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+    const pct = Math.max(0, Math.min(1, val / 100));
+    ctx.fillStyle = pct > 0.4 ? '#111' : (pct > 0.2 ? '#888' : '#c0392b');
+    if (rightAlign) {
+      ctx.fillRect(x + w - w * pct, y, w * pct, h);
+    } else {
+      ctx.fillRect(x, y, w * pct, h);
+    }
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.textAlign = rightAlign ? 'right' : 'left';
+    ctx.fillText(label, x + (rightAlign ? w : 0), y - 6);
+  }
+
+  // ==== COUNTDOWN ====
+  function drawCountdown() {
+    ctx.save();
+    const n = Math.ceil(S.countdown);
+    const phase = 1 - (S.countdown % 1);
+    const scale = 1 + phase * 0.6;
+    const alpha = 1 - phase * 0.7;
+    ctx.translate(W / 2, H * 0.4);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 140px "Courier New", monospace';
+    ctx.fillText(n > 0 ? n : '¡YA!', 0, 0);
+    ctx.restore();
+
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PREPARA'+'’'+'T...', W / 2, H * 0.18);
+  }
+
+  // ==== END SCREEN ====
+  function drawPLOC() {
+    // PLOC is the SOUND of the suction cup releasing: render it where the cup was,
+    // directly above the loser's head — not as a speech bubble from their mouth.
+    const winner = S.winner;
+    const loserX = winner === 1 ? W * 0.73 : W * 0.27;
+    const cy = H * 0.78 - 10;
+    const t = S.timeInScene;
+    const grow = Math.min(1, t * 4);
+    const px = loserX;
+    const py = cy - 175;
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(0.08 * Math.sin(t * 6));
+    ctx.scale(grow, grow);
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    const spikes = 14;
+    for (let i = 0; i < spikes * 2; i++) {
+      const a = (i / (spikes * 2)) * Math.PI * 2;
+      const r = (i % 2 === 0) ? 64 : 34;
+      const x = Math.cos(a) * r;
+      const y = Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 30px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('PLOC!', 0, 0);
+    ctx.restore();
+  }
+
+  function drawEnd() {
+    drawHUD();
+    drawPLOC();
+    // banner
+    ctx.save();
+    ctx.translate(W / 2, H * 0.32);
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-260, -32, 520, 64);
+    ctx.fillStyle = '#fbfaf3';
+    ctx.font = 'bold 28px "Courier News", "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('¡FI DEL COMBAT!', 0, -2);
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillText(
+      `EL GUANYADOR ÉS ${S.winner === 1 ? 'EL BIGOTUT' : 'EL CICATRIU'}`,
+      0, 22
+    );
+    ctx.restore();
+    // restart
+    if (Math.floor(S.timeInScene * 2) % 2 === 0) {
+      ctx.fillStyle = '#111';
+      ctx.font = 'bold 16px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('PRÉM ESPAI / TOCA PER TORNAR AL TÍTOL', W / 2, H * 0.92);
+    }
+  }
+
+  // ==== HELPERS ====
+  function inkFill(c) {
+    ctx.fillStyle = c;
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.4;
+  }
+  function fillStroke() { ctx.fill(); ctx.stroke(); }
+  function ellipsePath(x, y, rx, ry) {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
